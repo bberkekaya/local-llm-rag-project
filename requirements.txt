@@ -1,0 +1,9 @@
+haystack-ai
+chromadb
+sentence-transformers
+transformers
+fastapi
+uvicorn
+python-multipart
+pypdf
+python-docx
