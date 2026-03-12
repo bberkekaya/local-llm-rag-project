@@ -1,28 +1,57 @@
 from __future__ import annotations
 
 import io
+import json
+import logging
+import os
 import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import List
 
 import chromadb
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import requests
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from haystack import Document
 from haystack.components.builders import PromptBuilder
 from haystack_integrations.components.embedders.ollama import OllamaTextEmbedder
 from haystack_integrations.components.generators.ollama import OllamaGenerator
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 
 
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
+
+
 # ---- Model seçimleri ----
-EMBEDDING_MODEL = "bge-m3:latest"  # BGE-M3: Güçlü çok dilli embedding modeli (1024 boyut)
-LLM_MODEL = "llama3:latest"  # Ollama ile çalışan Llama3 modeli
-OLLAMA_URL = "http://localhost:11434"  # Ollama API endpoint
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "bge-m3:567m")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5:9b")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+GENERATION_NUM_PREDICT = int(os.getenv("GENERATION_NUM_PREDICT", "1024"))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1200"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
+MAX_FILE_SIZE_MB = 50
+MAX_FILE_COUNT = 10
+MAX_QUERY_LENGTH = 2000
+MAX_SOURCE_LENGTH = 180
+ALLOWED_EXTENSIONS = {".txt", ".pdf", ".docx", ".doc"}
+ALLOWED_CONTENT_TYPES = {
+    "text/plain",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
 
 # ---- ChromaDB konumu ----
 PERSIST_DIR = Path("chromadb_store")
@@ -31,6 +60,46 @@ PERSIST_DIR.mkdir(exist_ok=True)
 
 
 _chroma_client = None
+
+
+def get_allowed_origins() -> list[str]:
+    configured = os.getenv("ALLOWED_ORIGINS", "")
+    if configured.strip():
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return DEFAULT_ALLOWED_ORIGINS
+
+
+def sanitize_filename(filename: str | None) -> str:
+    if not filename:
+        raise HTTPException(status_code=400, detail="Geçersiz dosya adı.")
+
+    name = Path(filename).name.strip().replace("\x00", "")
+    if not name or name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Geçersiz dosya adı.")
+    if len(name) > MAX_SOURCE_LENGTH:
+        raise HTTPException(status_code=400, detail="Dosya adı çok uzun.")
+    return name
+
+
+def build_safe_error(message: str, status_code: int = 500) -> HTTPException:
+    return HTTPException(status_code=status_code, detail=message)
+
+
+def build_ollama_model_error(model_name: str) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=(
+            f'Ollama modeli bulunamadı: {model_name}. '
+            f"Modeli önce host makinede `ollama pull {model_name}` komutuyla indirin."
+        ),
+    )
+
+
+def normalize_ollama_exception(exc: Exception, model_name: str) -> HTTPException:
+    message = str(exc).lower()
+    if "not found" in message or "pull it first" in message:
+        return build_ollama_model_error(model_name)
+    return build_safe_error("Ollama servisi işlenemeyen bir hata döndürdü.", status_code=502)
 
 def get_chroma_client():
     global _chroma_client
@@ -41,7 +110,7 @@ def get_chroma_client():
 
 def get_collection():
     client = get_chroma_client()
-    # bge-m3:latest modeli 1024 boyutlu embedding üretir
+    # bge-m3:567m modeli 1024 boyutlu embedding üretir
     return client.get_or_create_collection(
         name="documents",
         metadata={"hnsw:space": "cosine"}
@@ -63,7 +132,7 @@ def load_generator() -> OllamaGenerator:
         model=LLM_MODEL,
         url=OLLAMA_URL,
         generation_kwargs={
-            "num_predict": 300,  # Maksimum token sayısı
+            "num_predict": GENERATION_NUM_PREDICT,
             "temperature": 0.7,  # Yaratıcılık seviyesi
         },
     )
@@ -91,7 +160,10 @@ def read_docx(file: io.BytesIO) -> str:
     return "\n".join(paragraphs)
 
 
-def chunk_text(text: str, chunk_size: int = 700, overlap: int = 100) -> List[str]:
+def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
+    if chunk_size <= overlap:
+        raise ValueError("chunk_size overlap değerinden büyük olmalıdır.")
+
     chunks = []
     start = 0
     length = len(text)
@@ -107,16 +179,32 @@ def chunk_text(text: str, chunk_size: int = 700, overlap: int = 100) -> List[str
 def embed_and_store(documents: List[Document], collection, embedder) -> int:
     added = 0
     for doc in documents:
-        for chunk in chunk_text(doc.content):
+        source = sanitize_filename(doc.meta.get("source", "upload"))
+        chunks = list(dict.fromkeys(chunk_text(doc.content)))
+        if not chunks:
+            continue
+
+        existing = collection.get(where={"source": source}, include=[])
+        existing_ids = existing.get("ids", [])
+        if existing_ids:
+            collection.delete(ids=existing_ids)
+
+        ids = []
+        embeddings = []
+        metadatas = []
+        for chunk in chunks:
             embedding = embedder.run(text=chunk)["embedding"]
-            chunk_id = str(uuid.uuid4())
-            collection.add(
-                ids=[chunk_id],
-                documents=[chunk],
-                embeddings=[embedding],
-                metadatas=[{"source": doc.meta.get("source", "upload")}],
-            )
-            added += 1
+            ids.append(str(uuid.uuid4()))
+            embeddings.append(embedding)
+            metadatas.append({"source": source})
+
+        collection.add(
+            ids=ids,
+            documents=chunks,
+            embeddings=embeddings,
+            metadatas=metadatas,
+        )
+        added += len(chunks)
     return added
 
 
@@ -137,20 +225,30 @@ Cevap (Türkçe):
 
 
 class QueryRequest(BaseModel):
-    query: str
-    top_k: int = 4
-    answer_style: str | None = None  # "short" | "bullet" | "long"
+    query: str = Field(min_length=1, max_length=MAX_QUERY_LENGTH)
+    top_k: int = Field(default=4, ge=1, le=10)
+    answer_style: str | None = Field(default=None, max_length=20)
 
 
 app = FastAPI(title="RAG API (FastAPI + Chroma + Haystack)", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=get_allowed_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Accept", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 @app.get("/")
 def root():
@@ -179,15 +277,14 @@ def list_files():
             sources[src] = sources.get(src, 0) + 1
         items = [{"source": k, "chunks": v} for k, v in sorted(sources.items())]
         return {"files": items, "total_chunks": sum(sources.values())}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Dosya listeleme hatası: {str(e)}")
+    except Exception:
+        logger.exception("Dosya listeleme hatası")
+        raise build_safe_error("Dosya listesi alınamadı.")
 
 
 @app.delete("/api/files/{source}")
 def delete_file(source: str):
-    source = source.strip()
-    if not source:
-        raise HTTPException(status_code=400, detail="Geçersiz kaynak adı.")
+    source = sanitize_filename(source)
     
     try:
         collection = get_collection()
@@ -203,8 +300,9 @@ def delete_file(source: str):
         return {"deleted": len(ids), "source": source}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Silme hatası: {str(e)}")
+    except Exception:
+        logger.exception("Silme hatası")
+        raise build_safe_error("Dosya silinemedi.")
 
 
 @app.post("/api/reindex")
@@ -219,19 +317,18 @@ def reindex():
             metadata={"hnsw:space": "cosine"}
         )
         return {"status": "cleared"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Sıfırlama hatası: {str(e)}")
+    except Exception:
+        logger.exception("Sıfırlama hatası")
+        raise build_safe_error("Koleksiyon sıfırlanamadı.")
 
 
 
 @app.post("/api/embed")
 async def embed_documents(files: List[UploadFile] = File(...)):
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    
     if not files:
         raise HTTPException(status_code=400, detail="Dosya yüklenmedi.")
+    if len(files) > MAX_FILE_COUNT:
+        raise HTTPException(status_code=400, detail=f"En fazla {MAX_FILE_COUNT} dosya yüklenebilir.")
 
     logger.info(f"Yükleme başladı: {len(files)} dosya")
     docs: List[Document] = []
@@ -239,47 +336,57 @@ async def embed_documents(files: List[UploadFile] = File(...)):
     
     for f in files:
         try:
-            logger.info(f"Dosya okunuyor: {f.filename}")
+            safe_name = sanitize_filename(f.filename)
+            suffix = Path(safe_name).suffix.lower()
+            if suffix not in ALLOWED_EXTENSIONS:
+                errors.append(f"{safe_name}: Desteklenmeyen dosya formatı")
+                continue
+            if f.content_type and f.content_type not in ALLOWED_CONTENT_TYPES:
+                errors.append(f"{safe_name}: Desteklenmeyen içerik tipi")
+                continue
+
+            logger.info(f"Dosya okunuyor: {safe_name}")
             data = await f.read()
             file_size_mb = len(data) / (1024 * 1024)
-            logger.info(f"{f.filename} boyutu: {file_size_mb:.2f}MB")
+            logger.info(f"{safe_name} boyutu: {file_size_mb:.2f}MB")
             
-            # Dosya boyutu kontrolü (50MB limit)
-            if file_size_mb > 50:
-                errors.append(f"{f.filename}: Dosya çok büyük ({file_size_mb:.1f}MB). Maksimum 50MB.")
+            if file_size_mb > MAX_FILE_SIZE_MB:
+                errors.append(f"{safe_name}: Dosya çok büyük ({file_size_mb:.1f}MB). Maksimum {MAX_FILE_SIZE_MB}MB.")
                 continue
             
             content = ""
-            if f.filename.lower().endswith(".txt") or f.content_type == "text/plain":
+            if suffix == ".txt" or f.content_type == "text/plain":
                 content = read_txt(io.BytesIO(data))
-            elif f.filename.lower().endswith(".pdf") or f.content_type == "application/pdf":
+            elif suffix == ".pdf" or f.content_type == "application/pdf":
                 try:
-                    logger.info(f"PDF işleniyor: {f.filename}")
+                    logger.info(f"PDF işleniyor: {safe_name}")
                     content = read_pdf(io.BytesIO(data))
-                except Exception as e:
-                    logger.error(f"PDF okuma hatası: {f.filename} - {str(e)}")
-                    errors.append(f"{f.filename}: PDF okunamadı - {str(e)}")
+                except Exception:
+                    logger.exception("PDF okuma hatası: %s", safe_name)
+                    errors.append(f"{safe_name}: PDF okunamadı")
                     continue
-            elif f.filename.lower().endswith((".docx", ".doc")) or f.content_type in ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"):
+            elif suffix in {".docx", ".doc"} or f.content_type in ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"):
                 try:
-                    logger.info(f"Word dosyası işleniyor: {f.filename}")
+                    logger.info(f"Word dosyası işleniyor: {safe_name}")
                     content = read_docx(io.BytesIO(data))
-                except Exception as e:
-                    logger.error(f"Word okuma hatası: {f.filename} - {str(e)}")
-                    errors.append(f"{f.filename}: Word dosyası okunamadı - {str(e)}")
+                except Exception:
+                    logger.exception("Word okuma hatası: %s", safe_name)
+                    errors.append(f"{safe_name}: Word dosyası okunamadı")
                     continue
             else:
-                errors.append(f"{f.filename}: Desteklenmeyen dosya formatı")
+                errors.append(f"{safe_name}: Desteklenmeyen dosya formatı")
                 continue
 
             if content.strip():
-                docs.append(Document(content=content, meta={"source": f.filename}))
-                logger.info(f"{f.filename} başarıyla işlendi, içerik uzunluğu: {len(content)} karakter")
+                docs.append(Document(content=content, meta={"source": safe_name}))
+                logger.info(f"{safe_name} başarıyla işlendi, içerik uzunluğu: {len(content)} karakter")
             else:
-                errors.append(f"{f.filename}: Dosya boş veya içerik çıkarılamadı")
-        except Exception as e:
-            logger.error(f"İşleme hatası: {f.filename} - {str(e)}")
-            errors.append(f"{f.filename}: İşleme hatası - {str(e)}")
+                errors.append(f"{safe_name}: Dosya boş veya içerik çıkarılamadı")
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("İşleme hatası: %s", getattr(f, "filename", "bilinmeyen-dosya"))
+            errors.append(f"{getattr(f, 'filename', 'Bilinmeyen dosya')}: İşleme hatası")
             continue
 
     if not docs:
@@ -300,9 +407,11 @@ async def embed_documents(files: List[UploadFile] = File(...)):
             result["warnings"] = errors
         
         return result
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Vektörleştirme hatası: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Vektörleştirme hatası: {str(e)}")
+        logger.exception("Vektörleştirme hatası")
+        raise normalize_ollama_exception(exc=e, model_name=EMBEDDING_MODEL)
 
 
 @app.post("/api/query")
@@ -311,9 +420,9 @@ def query_docs(body: QueryRequest):
     start_time = time.time()
     
     query = body.query.strip()
-    top_k = max(1, min(body.top_k, 10))
     if not query:
         raise HTTPException(status_code=400, detail="Soru boş olamaz.")
+    top_k = body.top_k
 
     collection = get_collection()
     embedder = load_embedder()
@@ -353,11 +462,11 @@ def query_docs(body: QueryRequest):
     try:
         response = generator.run(prompt=prompt)
         reply = response["replies"][0]
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, 
-            detail=f"LLM hatası: {str(e)}. Ollama çalışıyor mu kontrol edin (http://localhost:11434)"
-        )
+        logger.exception("LLM sorgu hatası")
+        raise normalize_ollama_exception(exc=e, model_name=LLM_MODEL)
     gen_time = time.time() - gen_start
     
     total_time = time.time() - start_time
@@ -402,15 +511,14 @@ def query_docs(body: QueryRequest):
 @app.post("/api/query/stream")
 async def query_docs_stream(body: QueryRequest):
     """Streaming version of query endpoint for real-time response"""
-    import json
     import time
     
     start_time = time.time()
     
     query = body.query.strip()
-    top_k = max(1, min(body.top_k, 10))
     if not query:
         raise HTTPException(status_code=400, detail="Soru boş olamaz.")
+    top_k = body.top_k
 
     collection = get_collection()
     embedder = load_embedder()
@@ -459,21 +567,23 @@ async def query_docs_stream(body: QueryRequest):
             # Ollama'dan streaming response al
             gen_start = time.time()
             token_count = 0
-            
-            import requests
+
             response = requests.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={
                     "model": LLM_MODEL,
                     "prompt": prompt,
                     "stream": True,
+                    "think": False,
                     "options": {
-                        "num_predict": 300,
+                        "num_predict": GENERATION_NUM_PREDICT,
                         "temperature": 0.7,
                     }
                 },
-                stream=True
+                stream=True,
+                timeout=(10, 120),
             )
+            response.raise_for_status()
             
             for line in response.iter_lines():
                 if line:
@@ -508,7 +618,9 @@ async def query_docs_stream(body: QueryRequest):
                         break
                         
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            logger.exception("Streaming sorgu hatası")
+            error = normalize_ollama_exception(exc=e, model_name=LLM_MODEL)
+            yield f"data: {json.dumps({'type': 'error', 'content': error.detail})}\n\n"
     
     return StreamingResponse(generate_stream(), media_type="text/event-stream")
 

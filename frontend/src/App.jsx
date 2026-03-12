@@ -4,7 +4,32 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+const MAX_FILE_COUNT = 10;
+const ALLOWED_EXTENSIONS = [".txt", ".pdf", ".docx", ".doc"];
+
+function isValidUploadFile(file) {
+  const lowerName = file.name.toLowerCase();
+  return ALLOWED_EXTENSIONS.some((ext) => lowerName.endsWith(ext));
+}
+
+function buildApiUrl(path) {
+  return API_BASE ? `${API_BASE}${path}` : path;
+}
+
+function mergeUploadFiles(existingFiles, incomingFiles) {
+  const fileMap = new Map();
+
+  [...existingFiles, ...incomingFiles].forEach((file) => {
+    const key = `${file.name}:${file.size}:${file.lastModified}`;
+    if (!fileMap.has(key)) {
+      fileMap.set(key, file);
+    }
+  });
+
+  return Array.from(fileMap.values());
+}
 
 export default function App() {
   const [darkMode, setDarkMode] = useState(() => {
@@ -37,7 +62,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState(null);
-  const [retryCount, setRetryCount] = useState(0);
   const [metadata, setMetadata] = useState(null);
 
   const fileInputRef = useRef(null);
@@ -46,7 +70,7 @@ export default function App() {
     setFileListLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/files`);
+      const res = await fetch(buildApiUrl("/api/files"));
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
@@ -93,19 +117,27 @@ export default function App() {
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const droppedFiles = Array.from(e.dataTransfer.files);
-      const validFiles = droppedFiles.filter(f =>
-        f.name.toLowerCase().endsWith('.txt') ||
-        f.name.toLowerCase().endsWith('.pdf') ||
-        f.name.toLowerCase().endsWith('.docx') ||
-        f.name.toLowerCase().endsWith('.doc')
-      );
+      const validFiles = droppedFiles.filter((file) => isValidUploadFile(file));
 
       if (validFiles.length === 0) {
         setError("Lütfen sadece TXT, PDF veya Word dosyaları yükleyin.");
         return;
       }
 
-      setFiles(validFiles);
+      const mergedFiles = mergeUploadFiles(files, validFiles);
+
+      if (mergedFiles.length > MAX_FILE_COUNT) {
+        setError(`En fazla ${MAX_FILE_COUNT} dosya yükleyebilirsiniz.`);
+        return;
+      }
+
+      const oversizedFile = mergedFiles.find((file) => file.size > MAX_FILE_SIZE_BYTES);
+      if (oversizedFile) {
+        setError(`${oversizedFile.name} 50MB sınırını aşıyor.`);
+        return;
+      }
+
+      setFiles(mergedFiles);
       setAdded(null);
       setError(null);
       setUploadProgress(0);
@@ -114,11 +146,35 @@ export default function App() {
   };
 
   const onFileChange = (e) => {
-    setFiles(Array.from(e.target.files || []));
+    const selectedFiles = Array.from(e.target.files || []);
+    const validFiles = selectedFiles.filter((file) => isValidUploadFile(file));
+    const mergedFiles = mergeUploadFiles(files, validFiles);
+
+    if (mergedFiles.length > MAX_FILE_COUNT) {
+      setError(`En fazla ${MAX_FILE_COUNT} dosya yükleyebilirsiniz.`);
+      e.target.value = "";
+      return;
+    }
+
+    const oversizedFile = mergedFiles.find((file) => file.size > MAX_FILE_SIZE_BYTES);
+    if (oversizedFile) {
+      setError(`${oversizedFile.name} 50MB sınırını aşıyor.`);
+      e.target.value = "";
+      return;
+    }
+
+    if (selectedFiles.length !== validFiles.length) {
+      setError("Sadece TXT, PDF ve Word dosyaları seçilebilir.");
+    }
+
+    setFiles(mergedFiles);
     setAdded(null);
-    setError(null);
+    if (selectedFiles.length === validFiles.length) {
+      setError(null);
+    }
     setUploadProgress(0);
     setUploadWarnings([]);
+    e.target.value = "";
   };
 
   const handleUpload = async () => {
@@ -152,7 +208,7 @@ export default function App() {
       setAbortController(controller);
       timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000);
 
-      const res = await fetch(`${API_BASE}/api/embed`, {
+      const res = await fetch(buildApiUrl("/api/embed"), {
         method: "POST",
         body: form,
         signal: controller.signal,
@@ -184,7 +240,7 @@ export default function App() {
           setError("İşlem zaman aşımına uğradı. Dosya çok büyük olabilir veya backend yanıt vermiyor.");
         }
       } else if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
-        setError("Backend'e bağlanılamıyor. Backend çalışıyor mu kontrol edin (http://localhost:8000)");
+        setError("Backend'e bağlanılamıyor. Sunucunun çalıştığını kontrol edin.");
       } else {
         setError(err.message || "Yükleme sırasında bir hata oluştu.");
       }
@@ -219,7 +275,7 @@ export default function App() {
     setMetadata(null);
 
     try {
-      const res = await fetch(`${API_BASE}/api/query/stream`, {
+      const res = await fetch(buildApiUrl("/api/query/stream"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query, top_k: topK, answer_style: answerStyle }),
@@ -228,6 +284,10 @@ export default function App() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || "Sorgu başarısız");
+      }
+
+      if (!res.body) {
+        throw new Error("Akış yanıtı alınamadı.");
       }
 
       const reader = res.body.getReader();
@@ -244,23 +304,25 @@ export default function App() {
 
         for (const line of lines) {
           if (line.startsWith('data: ')) {
+            let data;
             try {
-              const data = JSON.parse(line.slice(6));
-
-              if (data.type === 'contexts') {
-                setContexts(data.content);
-              } else if (data.type === 'token') {
-                setAnswer(prev => prev + data.content);
-              } else if (data.type === 'metadata') {
-                setMetadata(data.content);
-              } else if (data.type === 'done') {
-                setLoading(false);
-                setStreaming(false);
-              } else if (data.type === 'error') {
-                throw new Error(data.content);
-              }
+              data = JSON.parse(line.slice(6));
             } catch (e) {
               console.error("Parse error:", e);
+              continue;
+            }
+
+            if (data.type === 'contexts') {
+              setContexts(data.content);
+            } else if (data.type === 'token') {
+              setAnswer(prev => prev + data.content);
+            } else if (data.type === 'metadata') {
+              setMetadata(data.content);
+            } else if (data.type === 'done') {
+              setLoading(false);
+              setStreaming(false);
+            } else if (data.type === 'error') {
+              throw new Error(data.content || "Akış sırasında hata oluştu.");
             }
           }
         }
@@ -288,7 +350,7 @@ export default function App() {
     setFileListLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(source)}`, {
+      const res = await fetch(buildApiUrl(`/api/files/${encodeURIComponent(source)}`), {
         method: "DELETE",
       });
       if (!res.ok) {
@@ -308,7 +370,7 @@ export default function App() {
     setFileListLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/reindex`, { method: "POST" });
+      const res = await fetch(buildApiUrl("/api/reindex"), { method: "POST" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || "Reindex başarısız");
@@ -325,9 +387,10 @@ export default function App() {
 
   const handleRetry = () => {
     setError(null);
-    setRetryCount(prev => prev + 1);
     if (answer) {
       handleQuery();
+    } else if (files.length > 0) {
+      handleUpload();
     }
   };
 
@@ -358,9 +421,8 @@ export default function App() {
           </div>
         </div>
         <div className="model-box">
-          <div><strong>Embedding:</strong> bge-m3:latest (Ollama)</div>
-          <div><strong>LLM:</strong> llama3:latest (Ollama)</div>
-          <div><strong>Donanım:</strong> Local (Ollama)</div>
+          <div><strong>Embedding:</strong> bge-m3:567m (Ollama)</div>
+          <div><strong>LLM:</strong> qwen3.5:9b (Ollama)</div>
         </div>
       </header>
 
@@ -472,38 +534,6 @@ export default function App() {
         </button>
       </section>
 
-      <section className="card">
-        <h2>Doküman yönetimi</h2>
-        <div className="file-actions">
-          <button onClick={fetchFiles} disabled={fileListLoading}>
-            {fileListLoading ? "Yenileniyor..." : "Listeyi yenile"}
-          </button>
-          <button onClick={handleReindex} disabled={fileListLoading} className="danger">
-            Koleksiyonu sıfırla
-          </button>
-        </div>
-        <input
-          className="filter"
-          placeholder="Kaynak adına göre filtrele..."
-          value={fileFilter}
-          onChange={(e) => setFileFilter(e.target.value)}
-        />
-        {fileListLoading && <p>Yükleniyor...</p>}
-        {!fileListLoading && filteredFiles.length === 0 && <p>Dosya bulunamadı.</p>}
-        {!fileListLoading && filteredFiles.length > 0 && (
-          <ul className="file-list">
-            {filteredFiles.map((f) => (
-              <li key={f.source}>
-                <span>{f.source} ({f.chunks} parça)</span>
-                <button onClick={() => handleDelete(f.source)} className="ghost">
-                  Sil
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
       {error && (
         <div className="error">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -544,16 +574,6 @@ export default function App() {
               {answer}
             </ReactMarkdown>
           </div>
-          {contexts.length > 0 && (
-            <details>
-              <summary>Kullanılan bağlamlar ({contexts.length})</summary>
-              <ol>
-                {contexts.map((c, i) => (
-                  <li key={i}>{c}</li>
-                ))}
-              </ol>
-            </details>
-          )}
 
           {developerMode && metadata && (
             <div className="dev-metadata">
@@ -603,6 +623,19 @@ export default function App() {
                 </div>
               </details>
 
+              {contexts.length > 0 && (
+                <details style={{ marginTop: "12px" }}>
+                  <summary style={{ cursor: "pointer", fontWeight: 600, padding: "4px 0" }}>
+                    Kullanılan bağlamlar ({contexts.length})
+                  </summary>
+                  <ol style={{ marginTop: "8px" }}>
+                    {contexts.map((c, i) => (
+                      <li key={i}>{c}</li>
+                    ))}
+                  </ol>
+                </details>
+              )}
+
               {metadata.sources && metadata.sources.length > 0 && (
                 <details style={{ marginTop: "12px" }}>
                   <summary style={{ cursor: "pointer", fontWeight: 600, padding: "4px 0" }}>
@@ -643,6 +676,38 @@ export default function App() {
           )}
         </section>
       )}
+
+      <section className="card">
+        <h2>Doküman yönetimi</h2>
+        <div className="file-actions">
+          <button onClick={fetchFiles} disabled={fileListLoading}>
+            {fileListLoading ? "Yenileniyor..." : "Listeyi yenile"}
+          </button>
+          <button onClick={handleReindex} disabled={fileListLoading} className="danger">
+            Koleksiyonu sıfırla
+          </button>
+        </div>
+        <input
+          className="filter"
+          placeholder="Kaynak adına göre filtrele..."
+          value={fileFilter}
+          onChange={(e) => setFileFilter(e.target.value)}
+        />
+        {fileListLoading && <p>Yükleniyor...</p>}
+        {!fileListLoading && filteredFiles.length === 0 && <p>Dosya bulunamadı.</p>}
+        {!fileListLoading && filteredFiles.length > 0 && (
+          <ul className="file-list">
+            {filteredFiles.map((f) => (
+              <li key={f.source}>
+                <span>{f.source} ({f.chunks} parça)</span>
+                <button onClick={() => handleDelete(f.source)} className="ghost">
+                  Sil
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

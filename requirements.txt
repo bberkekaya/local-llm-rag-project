@@ -1,4 +1,5 @@
 haystack-ai
+ollama-haystack
 chromadb
 sentence-transformers
 transformers
@@ -7,3 +8,4 @@ uvicorn
 python-multipart
 pypdf
 python-docx
+requests

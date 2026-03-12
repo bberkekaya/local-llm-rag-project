@@ -2,6 +2,12 @@
   font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 /* Dark Mode (Default) */
 :root[data-theme="dark"],
 :root:not([data-theme]) {
@@ -131,17 +137,19 @@ input[type="file"] {
 }
 
 input[type="file"]::-webkit-file-upload-button {
-  background: var(--gradient-start);
+  background: #2563eb;
   color: var(--text-primary);
   border: none;
   border-radius: 8px;
   padding: 8px 12px;
   cursor: pointer;
-  transition: background 0.3s ease;
+  transition: background-color 0.3s ease;
 }
 
 textarea {
   width: 100%;
+  max-width: 100%;
+  display: block;
   resize: vertical;
   padding: 10px;
   border-radius: 10px;
@@ -158,19 +166,19 @@ textarea:focus {
 }
 
 button {
-  background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+  background: #2563eb;
   color: var(--text-primary);
   border: none;
   border-radius: 10px;
   padding: 12px 16px;
   cursor: pointer;
-  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.35);
-  transition: transform 0.08s ease, box-shadow 0.2s ease, filter 0.2s ease, background 0.3s ease;
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.28);
+  transition: transform 0.08s ease, box-shadow 0.2s ease, filter 0.2s ease, background-color 0.3s ease;
 }
 
 button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(99, 102, 241, 0.45);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.36);
   filter: brightness(1.05);
 }
 
@@ -182,8 +190,8 @@ button:disabled {
 }
 
 button.danger {
-  background: linear-gradient(135deg, #ef4444, #f97316);
-  box-shadow: 0 6px 18px rgba(239, 68, 68, 0.35);
+  background: #dc2626;
+  box-shadow: 0 6px 18px rgba(220, 38, 38, 0.28);
 }
 
 button.ghost {
@@ -202,6 +210,8 @@ input[type="range"] {
 .select {
   margin-top: 6px;
   width: 100%;
+  max-width: 100%;
+  display: block;
   padding: 10px;
   border-radius: 10px;
   border: 1px solid var(--border-input);
@@ -239,6 +249,8 @@ input[type="range"] {
 
 .filter {
   width: 100%;
+  max-width: 100%;
+  display: block;
   padding: 10px;
   border-radius: 10px;
   border: 1px solid var(--border-input);

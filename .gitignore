@@ -22,6 +22,7 @@ wheels/
 MANIFEST
 
 # Virtual Environment
+.venv/
 venv/
 env/
 ENV/
@@ -30,6 +31,7 @@ ENV/
 frontend/node_modules/
 frontend/dist/
 frontend/build/
+frontend/.vite/
 frontend/.env
 frontend/.env.local
 frontend/npm-debug.log*
@@ -56,3 +58,10 @@ Thumbs.db
 
 # Environment Variables
 .env
+.env.*
+
+# Local data / caches
+*.sqlite
+*.sqlite3
+*.db
+*.log
