@@ -1,18 +1,18 @@
 # Local RAG Demo
 
-Bu proje, yerel Ollama modelleriyle dokuman yukleyip onlar uzerinden soru-cevap yapmanizi saglayan bir RAG uygulamasidir. Backend FastAPI ile, arayuz React + Vite ile, vektor depolama ise ChromaDB ile calisir.
+Bu proje, yerel Ollama modelleriyle doküman yükleyip onlar üzerinden soru-cevap yapmanızı sağlayan bir RAG uygulamasıdır. Backend FastAPI ile, arayüz React + Vite ile, vektör depolama ise ChromaDB ile çalışır.
 
-## Ozet
+## Özet
 
-- Tamamen lokal calisir; harici API anahtari gerekmez.
-- Varsayilan modeller `qwen3.5:9b` ve `bge-m3:567m` olarak tanimlidir.
-- TXT, PDF, DOCX ve DOC dosyalari yuklenebilir.
-- Yanitlar streaming olarak gelir.
-- Gelistirici modu ile context, sure ve skor detaylari gorulebilir.
-- Yuklenen veriler ChromaDB icinde kalici olarak tutulur.
-- Docker kurulumu ayri bir Ollama container'i kullanmaz; host makinedeki Ollama'ya baglanir.
+- Tamamen lokal çalışır; harici API anahtarı gerekmez.
+- Varsayılan modeller `qwen3.5:9b` ve `bge-m3:567m` olarak tanımlıdır.
+- TXT, PDF, DOCX ve DOC dosyaları yüklenebilir.
+- Yanıtlar streaming olarak gelir.
+- Geliştirici modu ile context, süre ve skor detayları görülebilir.
+- Yüklenen veriler ChromaDB içinde kalıcı olarak tutulur.
+- Docker kurulumu ayrı bir Ollama container'ı kullanmaz; host makinedeki Ollama'ya bağlanır.
 
-## Teknoloji Yigini
+## Teknoloji Yığını
 
 ### Backend
 
@@ -29,14 +29,14 @@ Bu proje, yerel Ollama modelleriyle dokuman yukleyip onlar uzerinden soru-cevap 
 - react-markdown
 - react-syntax-highlighter
 
-## Varsayilan Modeller
+## Varsayılan Modeller
 
 ```bash
 LLM_MODEL=qwen3.5:9b
 EMBEDDING_MODEL=bge-m3:567m
 ```
 
-Host makinede bu modellerin kurulu olmasi gerekir:
+Host makinede bu modellerin kurulu olması gerekir:
 
 ```bash
 ollama pull qwen3.5:9b
@@ -44,30 +44,30 @@ ollama pull bge-m3:567m
 ollama list
 ```
 
-## Ortam Degiskenleri
+## Ortam Değişkenleri
 
-Backend su degiskenleri destekler:
+Backend şu değişkenleri destekler:
 
 ```bash
-OLLAMA_URL= http://localhost:11434
+OLLAMA_URL=http://localhost:11434
 LLM_MODEL=qwen3.5:9b
 EMBEDDING_MODEL=bge-m3:567m
 GENERATION_NUM_PREDICT=1024
 CHUNK_SIZE=1200
 CHUNK_OVERLAP=200
-ALLOWED_ORIGINS= http://localhost:5173, http://127.0.0.1:5173
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-Frontend gelistirme ortaminda Vite proxy kullanilir:
+Frontend geliştirme ortamında Vite proxy kullanılır:
 
 ```bash
-VITE_PROXY_TARGET= http://localhost:8000
+VITE_PROXY_TARGET=http://localhost:8000
 ```
 
-Isterseniz frontend tarafinda dogrudan API base adresi de verebilirsiniz:
+İsterseniz frontend tarafında doğrudan API base adresi de verebilirsiniz:
 
 ```bash
-VITE_API_BASE_URL= http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8000
 ```
 
 ## Local Kurulum
@@ -96,7 +96,7 @@ macOS/Linux:
 source venv/bin/activate
 ```
 
-Ardindan:
+Ardından:
 
 ```bash
 pip install -r requirements.txt
@@ -111,22 +111,22 @@ npm install
 npm run dev
 ```
 
-Erisim adresleri:
+Erişim adresleri:
 
 - Frontend: `http://127.0.0.1:5173`
 - Backend: `http://localhost:8000`
 - Ollama: `http://localhost:11434`
 
-## Docker ile Calistirma
+## Docker ile Çalıştırma
 
-Docker yapisi iki servisten olusur:
+Docker yapısı iki servisten oluşur:
 
 - `backend`
 - `frontend`
 
-Ollama Docker icinde calismaz. Backend, host makinedeki Ollama'ya baglanir.
+Ollama Docker içinde çalışmaz. Backend, host makinedeki Ollama'ya bağlanır.
 
-### Baslatma
+### Başlatma
 
 ```bash
 ollama list
@@ -141,62 +141,62 @@ docker compose build --no-cache backend frontend
 docker compose up -d
 ```
 
-### Docker erisim adresleri
+### Docker erişim adresleri
 
 - Frontend: `http://localhost:8080`
 - Backend API: `http://localhost:8000`
 - Host Ollama API: `http://localhost:11434`
 
-### Docker notlari
+### Docker notları
 
-- Backend varsayilan olarak `http://host.docker.internal:11434` adresindeki host Ollama'ya baglanir.
-- Frontend, Nginx uzerinden `/api` isteklerini backend servisine proxy eder.
-- `ollama list` ciktisinda model gorunuyorsa Docker backend de ayni modeli kullanir.
+- Backend varsayılan olarak `http://host.docker.internal:11434` adresindeki host Ollama'ya bağlanır.
+- Frontend, Nginx üzerinden `/api` isteklerini backend servisine proxy eder.
+- `ollama list` çıktısında model görünüyorsa Docker backend de aynı modeli kullanır.
 - `docker compose down -v` sadece ChromaDB volume'unu temizler; host Ollama modellerini silmez.
 
-## Uygulama Davranisi
+## Uygulama Davranışı
 
-### Dosya yukleme
+### Dosya yükleme
 
-- Desteklenen uzantilar: `.txt`, `.pdf`, `.docx`, `.doc`
-- Maksimum dosya sayisi: `10`
+- Desteklenen uzantılar: `.txt`, `.pdf`, `.docx`, `.doc`
+- Maksimum dosya sayısı: `10`
 - Tek dosya boyut limiti: `50MB`
-- Ayni dosya adi tekrar yuklenirse eski kayitlar silinir ve yeni icerik yazilir.
+- Aynı dosya adı tekrar yüklenirse eski kayıtlar silinir ve yeni içerik yazılır.
 
 ### Sorgu
 
-- Maksimum sorgu uzunlugu: `2000` karakter
-- `top_k` araligi: `1-10`
+- Maksimum sorgu uzunluğu: `2000` karakter
+- `top_k` aralığı: `1-10`
 - Streaming endpoint mevcuttur.
 
-### Koleksiyon sifirlama
+### Koleksiyon sıfırlama
 
-`Koleksiyonu sifirla` islemi ChromaDB icindeki `documents` koleksiyonunu tamamen silip bos olarak yeniden olusturur. Bu islem:
+`Koleksiyonu sıfırla` işlemi ChromaDB içindeki `documents` koleksiyonunu tamamen silip boş olarak yeniden oluşturur. Bu işlem:
 
-- Yuklenen dokuman embedding'lerini siler.
-- Dosya listesini bosaltir.
+- Yüklenen doküman embedding'lerini siler.
+- Dosya listesini boşaltır.
 - Ollama modellerini silmez.
-- Kod veya Docker image'larini etkilemez.
+- Kod veya Docker image'larını etkilemez.
 
-## API Ozeti
+## API Özeti
 
-- `GET /api/health`: Servis ve model bilgisi doner.
-- `GET /api/files`: Yuklenmis kaynak dosyalari listeler.
-- `DELETE /api/files/{source}`: Belirli kaynaga ait kayitlari siler.
-- `POST /api/reindex`: Tum koleksiyonu temizler.
-- `POST /api/embed`: Dosyalari vektorlestirir.
-- `POST /api/query`: Normal sorgu yaniti uretir.
-- `POST /api/query/stream`: Streaming sorgu yaniti uretir.
+- `GET /api/health`: Servis ve model bilgisi döner.
+- `GET /api/files`: Yüklenmiş kaynak dosyaları listeler.
+- `DELETE /api/files/{source}`: Belirli kaynağa ait kayıtları siler.
+- `POST /api/reindex`: Tüm koleksiyonu temizler.
+- `POST /api/embed`: Dosyaları vektörleştirir.
+- `POST /api/query`: Normal sorgu yanıtı üretir.
+- `POST /api/query/stream`: Streaming sorgu yanıtı üretir.
 
-## Guvenlik ve Sinirlar
+## Güvenlik ve Sınırlar
 
-- CORS varsayilan olarak lokal origin'lerle sinirlidir.
-- Yanitlarda `Cache-Control: no-store` kullanilir.
-- Ic hata detaylari dogrudan istemciye sizdirilmaz.
-- Frontend ve backend dosya tipi, adet ve boyut sinirlarini uygular.
-- Dosya adlari normalize edilir.
+- CORS varsayılan olarak lokal origin'lerle sınırlıdır.
+- Yanıtlarda `Cache-Control: no-store` kullanılır.
+- İç hata detayları doğrudan istemciye sızdırılmaz.
+- Frontend ve backend dosya tipi, adet ve boyut sınırlarını uygular.
+- Dosya adları normalize edilir.
 
-## Yarali Komutlar
+## Yararlı Komutlar
 
 ### Docker durumunu kontrol et
 
@@ -211,7 +211,7 @@ docker compose logs --tail 100 backend
 ollama list
 ```
 
-### Koleksiyonu temizlemeden Docker verisini sifirla
+### Koleksiyonu temizlemeden Docker verisini sıfırla
 
 ```bash
 docker compose down -v
@@ -220,27 +220,27 @@ docker compose up --build -d
 
 ## Sorun Giderme
 
-- `Failed to fetch`: Backend kapali olabilir veya ag baglantisi kurulamiyordur.
-- Ollama baglanti hatasi: Host makinede Ollama servisinin calistigini kontrol edin.
-- Docker'da yanit gelmiyor: Once `ollama list` ile gerekli modellerin hostta oldugunu kontrol edin.
-- Docker'da 502 hatasi: `docker compose logs --tail 200 backend` ciktilarina bakin.
-- Yanit kalitesi dusuk: `top_k` degerini artirip daha fazla baglam deneyin.
+- `Failed to fetch`: Backend kapalı olabilir veya ağ bağlantısı kurulamıyordur.
+- Ollama bağlantı hatası: Host makinede Ollama servisinin çalıştığını kontrol edin.
+- Docker'da yanıt gelmiyor: Önce `ollama list` ile gerekli modellerin hostta olduğunu kontrol edin.
+- Docker'da 502 hatası: `docker compose logs --tail 200 backend` çıktılarına bakın.
+- Yanıt kalitesi düşük: `top_k` değerini artırıp daha fazla bağlam deneyin.
 
-## Paylasim Oncesi Kontrol
+## Paylaşım Öncesi Kontrol
 
-Repo paylasmadan once su kontrolu calistirabilirsiniz:
+Repo paylaşmadan önce şu kontrolü çalıştırabilirsiniz:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\prepublish_check.ps1
 ```
 
-Gercek dokumanlarla olusan lokal vektor verisini temizlemek isterseniz:
+Gerçek dokümanlarla oluşan lokal vektör verisini temizlemek isterseniz:
 
 ```cmd
 rmdir /s /q chromadb_store
 ```
 
-Host Ollama model temizligi gerekiyorsa:
+Host Ollama model temizliği gerekiyorsa:
 
 ```bash
 ollama rm <model>
